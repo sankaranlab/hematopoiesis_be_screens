@@ -1,0 +1,105 @@
+#### Perturb(BE)-seq_clustering_of_sgrnas_gene_expression_space
+# Import dependencies
+
+library(Seurat)
+library(dplyr)
+library(BuenColors)
+library(pheatmap)
+library(viridis)
+
+`%notin%` = Negate(`%in%`)
+
+# Import a Seurat object with the dominant sgRNA stored as a column in the meta.data
+seurat_obj_merged_dominant_perturbation=readRDS('path_to_seurat_object.RDS')
+average_expression_per_guide=AverageExpression(seurat_obj_merged_dominant_perturbation,assays="RNA",slot="scale.data",return.seurat = TRUE,group.by="perturbation",verbose=TRUE)
+
+#Subset to desired genes/guides to be used for clustering (e.g. DEG genes between strong mutants and controls calculated using FindMarkers in Seurat)
+genes_to_use=
+guides_to_use=
+perturbation_signature_average_expression=average_expression_per_guide@assays$RNA@scale.data[which(row.names(average_expression_per_guide@assays$RNA@scale.data) %in% c(genes_to_use)),guides_to_use]
+
+# OPTIONAL. Import a dataframe that contains categories of the sgRNAs (e.g. control, non-targeting, hit, etc.)
+sgrna_category_dataframe=read.table('sgrna_category_dataframe.csv')
+
+control_sgrnas=sgrna_category_dataframe%>%
+filter(category=='control')%>%
+pull(sgrna)
+
+non_targeting_sgrnas=sgrna_category_dataframe%>%
+filter(category=='non_targeting')%>%
+pull(sgrna)
+
+hit_sgrnas=sgrna_category_dataframe%>%
+filter(category=='hit')%>%
+pull(sgrna)
+
+labs.col <- colnames(perturbation_signature_average_expression)
+
+control_columns=which(colnames(perturbation_signature_average_expression) %in%
+     control_sgrnas)
+
+perturbation_columns=which(colnames(perturbation_signature_average_expression) %in%
+     hit_sgrnas)
+
+col_groups=data.frame(
+ c(rep(1,length(non_targeting_columns)),
+  rep(2,length(control_columns)),
+    rep(3,length(perturbation_columns))),
+     c(non_targeting_columns,
+      control_columns,
+       perturbation_columns)
+  
+  )
+
+colnames(col_groups)=c("group","sgrna_index")    
+
+col_groups_others=data.frame(rep(4,length(which(1:dim(perturbation_signature_average_expression)[2] %notin% col_groups$sgrna_index))),
+           which(1:dim(perturbation_signature_average_expression)[2] %notin% col_groups$sgrna_index))
+colnames(col_groups_others)=c("group","sgrna_index")                       
+col_groups=rbind(col_groups,col_groups_others)
+colnames(col_groups)=c("group","sgrna_index")     
+
+col_groups=col_groups %>%
+arrange(sgrna_index)
+
+col_groups=col_groups$group
+
+quantile_breaks <- function(xs, n = 10) {
+  breaks <- quantile(xs, probs = seq(0, 1, length.out = n))
+  breaks[!duplicated(breaks)]
+}
+mat_breaks <- quantile_breaks(perturbation_signature_average_expression, n = 11)
+
+mat_breaks[2:9]=mat_breaks[2:9]+0.1
+
+mat_col <- data.frame(group = col_groups)
+rownames(mat_col) <- colnames(perturbation_signature_average_expression)
+
+mat_colors <- list(group = c(jdb_palette("brewer_spectra")[c(2,3,8)],"grey70"))
+names(mat_colors$group) <- unique(col_groups)
+
+options(repr.plot.width=40, repr.plot.height=20)
+out=pheatmap(perturbation_signature_average_expression,
+color             = viridis(length(mat_breaks) - 1),
+  breaks            = mat_breaks,
+  border_color      = NA,
+  show_rownames     = TRUE,
+             show_colnames     = FALSE,
+           annotation_col    = mat_col,
+  annotation_colors = mat_colors,
+         labels_col = labs.col,
+             clustering_distance_rows="euclidean",
+clustering_distance_cols="euclidean",
+  drop_levels       = TRUE,
+  fontsize          = 6,
+  main              = "Quantile Color Scale"
+)
+save_pheatmap_pdf <- function(x, filename, width=7, height=3) {
+   stopifnot(!missing(x))
+   stopifnot(!missing(filename))
+   pdf(filename, width=width, height=height)
+   grid::grid.newpage()
+   grid::grid.draw(x$gtable)
+   dev.off()
+}
+#save_pheatmap_pdf(out, "path")

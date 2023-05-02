@@ -1,0 +1,260 @@
+#### Pooled_sc-genotyping-preprocessing_2
+
+# Load packages
+library(reshape2)
+library(loomR)
+library(data.table)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(scales)
+library(data.table)
+library(tidyverse)
+
+`%notin%` <- Negate(`%in%`)
+
+output_path=""
+replicate_number=2
+experiment_prefix=""
+fastq_path=""
+
+#### Calculate AF from the loom file exported by the Tapestri pipeline
+# Connect to the loom file in read/write mode
+lfile1 <- connect(filename = "filename.loom", mode = "r+")
+lfile1
+
+# Connect to the loom file in read/write mode
+lfile2 <- connect(filename = "filename.loom", mode = "r+")
+lfile2
+
+# Add additional loom files here
+
+### format barcode
+cell_bc_read1 <- lfile1[['col_attrs/barcode']][]
+cell_bc_split1 <- str_split(cell_bc_read1, '-')
+
+cell_bc_split_letters1 <- lapply(cell_bc_split1, '[[', 1)
+cell_bc_split_rep1 <- lapply(cell_bc_split1, '[[', 2)
+
+cell_barcodes1 <- as.data.frame(paste('rep','1', '_', cell_bc_split_letters1, sep=''))
+colnames(cell_barcodes1) <- c('barcode')
+
+
+### format barcode
+cell_bc_read2 <- lfile2[['col_attrs/barcode']][]
+cell_bc_split2 <- str_split(cell_bc_read2, '-')
+
+cell_bc_split_letters2 <- lapply(cell_bc_split2, '[[', 1)
+cell_bc_split_rep2 <- lapply(cell_bc_split2, '[[', 2)
+
+cell_barcodes2 <- as.data.frame(paste('rep','2', '_', cell_bc_split_letters2, sep=''))
+colnames(cell_barcodes2) <- c('barcode')
+
+### Filter to chromosome of interest
+### create mask of positions
+
+### rep_1
+## Get index of chromosome of interest positions
+masklocus_rep1 <- which(lfile1[['row_attrs/CHROM']][] == 'chromosome_of_interest')
+# index loom matrix
+loom_mat_locus_rep1 <- lfile1[['matrix']][,masklocus_rep1]
+
+### rep_2
+## Get index of chromosome of interest positions
+masklocus_rep2 <- which(lfile2[['row_attrs/CHROM']][] == 'chromosome_of_interest')
+# index loom matrix
+loom_mat_locus_rep2 <- lfile2[['matrix']][,masklocus_rep2]
+
+### get respective position, alt and ref alleles
+
+### rep1
+loom_rep1_pos <- lfile1[['row_attrs/POS']][masklocus_rep1]
+loom_rep1_alt <- lfile1[['row_attrs/ALT']][masklocus_rep1]
+loom_rep1_ref <- lfile1[['row_attrs/REF']][masklocus_rep1]
+
+### rep2
+loom_rep2_pos <- lfile2[['row_attrs/POS']][masklocus_rep2]
+loom_rep2_alt <- lfile2[['row_attrs/ALT']][masklocus_rep2]
+loom_rep2_ref <- lfile2[['row_attrs/REF']][masklocus_rep2]
+
+# filter to Chromomosome of interest
+mask <- which(lfile1[['row_attrs/CHROM']][] == 'chromosome_of_interest')
+
+# AD = # of reads with evidence for mutation
+# RO = # number of read with no evidence for mutation
+locus_ad <- lfile1[['layers/AD']][,mask]
+locus_ro <- lfile1[['layers/RO']][,mask]
+
+# Calculate AF matrix
+locus_af <- locus_ad/(locus_ad+locus_ro)
+
+# replace nan with 0
+#locus_af[is.na(locus_af)] <- 0
+
+# Set a variant allele frequency threshold above which you consider a cell edited
+af_threshold=
+
+locus_edit <- ifelse(locus_af > af_threshold, 1, 0)
+
+#### Assign max guide to barcode
+# Load in pooled genotyping data generated on the prior script
+df_tapestri <- fread('genotyping_detected_all_replicates.csv')
+
+# rename columns
+colnames(df_tapestri) <- unlist(df_tapestri[1,])
+df_tapestri <- df_tapestri[-1,]
+
+# get dominant sgRNA for each cell
+df_guide_bc_max <- df_tapestri %>%
+select(CB, sgRNA) %>%
+count(CB, sgRNA, sort=TRUE) %>%
+group_by(CB) %>%
+summarise(first=sgRNA[1], second=sgRNA[2])
+
+df_tapestri_max_loom=df_tapestri[which(df_tapestri$CB %in% c(cell_barcodes1$barcode,cell_barcodes2$barcode)),]
+
+df_guide_bc_max_loom=df_tapestri_max_loom %>%
+select(CB, sgRNA) %>%
+count(CB, sgRNA, sort=TRUE) %>%
+group_by(CB) %>%
+mutate(sgRNA_n = paste(sgRNA, n,sep="_")) %>%
+summarise(first=sgRNA_n[1], second=sgRNA_n[2]) %>%
+mutate(n_first = str_split_i(first,"_",2)) %>%
+mutate(first = substr(first,1,20)) %>%
+mutate(n_second = str_split_i(second,"_",2)) %>%
+mutate(second = substr(second,1,20))
+
+# Import the cell barcode names from cells with a single dominant sgRNA, which can be obtained wit
+single_sgrna_barcodes=read.csv(paste(output_path,"single_sgrna_barcodes.csv",sep=""))
+single_sgrna_barcodes=single_sgrna_barcodes$x
+         
+df_guide_bc_max_loom_singlets=df_guide_bc_max_loom %>%
+filter(CB %in% single_sgrna_barcodes)
+
+# filter to chromosome of interest and optionally mask known SNPs
+mask_rep1 <- which(lfile1[['row_attrs/CHROM']][] == 'chromosome_of_interest' & (paste(lfile1[['row_attrs/REF']][],lfile1[['row_attrs/ALT']][],sep="") %in% c("TC","AG")) )
+mask_rep1=mask_rep1[which(mask_rep1 %notin% which(lfile1[['row_attrs/POS']][] == coordinates_known_SNP))]
+
+locus_ad_rep1 <- lfile1[['layers/AD']][,mask_rep1]
+locus_ro_rep1 <- lfile1[['layers/RO']][,mask_rep1]
+
+# rep2
+mask_rep2 <- which(lfile1[['row_attrs/CHROM']][] == 'chromosome_of_interest' & (paste(lfile1[['row_attrs/REF']][],lfile1[['row_attrs/ALT']][],sep="") %in% c("TC","AG")) )
+mask_rep2=mask_rep2[which(mask_rep2 %notin% which(lfile1[['row_attrs/POS']][] == coordinates_known_SNP))]
+
+locus_ad_rep2 <- lfile1[['layers/AD']][,mask_rep2]
+locus_ro_rep2 <- lfile1[['layers/RO']][,mask_rep2]
+
+
+# Calculate AF matrix
+# rep 1
+locus_af_rep1 <- locus_ad_rep1/(locus_ad_rep1+locus_ro_rep1)
+locus_edit_rep1 <- ifelse(locus_af_rep1 > af_threshold, locus_af_rep1, 0)
+
+# rep 2
+locus_af_rep2 <- locus_ad_rep2/(locus_ad_rep2+locus_ro_rep2)
+locus_edit_rep2 <- ifelse(locus_af_rep2 > af_threshold, locus_af_rep2, 0)
+
+
+loom_mat_locus_rep1 <- locus_edit_rep1
+loom_mat_locus_rep2 <- locus_edit_rep2
+
+loom_mat_locus_rep1=as.data.frame(loom_mat_locus_rep1)
+colnames(loom_mat_locus_rep1) = 1:dim(loom_mat_locus_rep1)[2]
+loom_mat_locus_rep1_annotated=loom_mat_locus_rep1
+loom_mat_locus_rep1_annotated$index_mutated_colums=0
+loom_mat_locus_rep1_annotated$allele_frequency=0
+
+loom_mat_locus_rep2=as.data.frame(loom_mat_locus_rep2)
+colnames(loom_mat_locus_rep2) = 1:dim(loom_mat_locus_rep2)[2]
+loom_mat_locus_rep2_annotated=loom_mat_locus_rep2
+loom_mat_locus_rep2_annotated$index_mutated_colums=0
+loom_mat_locus_rep2_annotated$allele_frequency=0
+
+loom_mat_locus_rep1_annotated$index_mutated_colums <- apply(loom_mat_locus_rep1, 1, function(x) {
+           x1 <- x[x!=0]
+           names(x1)})
+loom_mat_locus_rep1_annotated$allele_frequency <- apply(loom_mat_locus_rep1, 1, function(x) {
+           x1 <- x[x!=0]
+           x1})
+loom_mat_locus_rep1_annotated$row = 1:dim(loom_mat_locus_rep1)[1]
+
+loom_mat_locus_rep2_annotated$index_mutated_colums <- apply(loom_mat_locus_rep2, 1, function(x) {
+           x1 <- x[x!=0]
+           names(x1)})
+loom_mat_locus_rep2_annotated$allele_frequency <- apply(loom_mat_locus_rep2, 1, function(x) {
+           x1 <- x[x!=0]
+           x1})
+loom_mat_locus_rep2_annotated$row = 1:dim(loom_mat_locus_rep2)[1]
+
+tibble= loom_mat_locus_rep1_annotated[,c("row","index_mutated_colums","allele_frequency")]
+colnames(tibble)=c("row","edited_pos","allele_frequency")
+tibble=tibble%>% 
+  mutate(edited_pos = sapply(edited_pos, toString)) 
+coords_loom_mat_rep1=tibble
+
+
+tibble= loom_mat_locus_rep2_annotated[,c("row","index_mutated_colums","allele_frequency")]
+colnames(tibble)=c("row","edited_pos","allele_frequency")
+tibble=tibble%>% 
+  mutate(edited_pos = sapply(edited_pos, toString)) 
+coords_loom_mat_rep2=tibble
+
+
+
+### match barcodes to row
+coords_loom_mat_rep1 <- coords_loom_mat_rep1 %>%
+#dplyr::mutate(barcode = cell_barcodes1$barcode[cell_ind_rep1], .after=row)
+dplyr::mutate(barcode = cell_barcodes1$barcode, .after=row)
+
+coords_loom_mat_rep2 <- coords_loom_mat_rep2 %>%
+#dplyr::mutate(barcode = cell_barcodes2$barcode[cell_ind_rep2], .after=row)
+dplyr::mutate(barcode = cell_barcodes2$barcode, .after=row)
+head(coords_loom_mat_rep1)
+
+coords_loom_mat_rep1$barcode = cell_barcodes1$barcode
+coords_loom_mat_rep2$barcode = cell_barcodes2$barcode
+head(coords_loom_mat_rep1)
+
+loom_rep1_pos=lfile1[['row_attrs/POS']][mask_rep1]
+loom_rep2_pos=lfile2[['row_attrs/POS']][mask_rep2]
+
+
+## match positions to loom calls
+coords_loom_mat_rep1 <- coords_loom_mat_rep1 %>%
+rowwise() %>%
+mutate(edited_locus_pos = list(loom_rep1_pos[as.numeric(unlist(str_split(edited_pos, ', ')))]))
+
+coords_loom_mat_rep2 <- coords_loom_mat_rep2 %>%
+rowwise() %>%
+mutate(edited_locus_pos = list(loom_rep2_pos[as.numeric(unlist(str_split(edited_pos, ', ')))]))
+
+bind_rows(coords_loom_mat_rep1,
+          coords_loom_mat_rep2) %>% 
+dplyr::select(barcode, edited_locus_pos,allele_frequency) -> tapestri_edited_cells_called_pos
+
+tapestri_edited_cells_called_pos_singlet=tapestri_edited_cells_called_pos[which(tapestri_edited_cells_called_pos$barcode %in% single_sgrna_barcodes),]
+
+# the resulting dataframe has information on sgRNA and the presence or absence of edits in each single cell
+df_cb_sgrna_edit=merge(df_guide_bc_max_loom_singlets,tapestri_edited_cells_called_pos_singlet,
+                      by.x="CB",by.y="barcode",all=TRUE)
+
+# Optionally, we can focus the analysis on certain classes of mutations
+# Import reference file with the orientation of each sgRNA in the sense or antisense strand (available from the sgRNA design tool)
+sense_positions_rep1=lfile1[['row_attrs/POS']][][mask_rep1][which(lfile1[['row_attrs/ALT']][][mask_rep1] == "G")]
+antisense_positions_rep1=lfile1[['row_attrs/POS']][][mask_rep1][which(lfile1[['row_attrs/ALT']][][mask_rep1] == "C")]
+sense_positions_rep2=lfile2[['row_attrs/POS']][][mask_rep2][which(lfile2[['row_attrs/ALT']][][mask_rep2] == "G")]
+antisense_positions_rep2=lfile2[['row_attrs/POS']][][mask_rep2][which(lfile2[['row_attrs/ALT']][][mask_rep2] == "C")]
+
+df_cb_sgrna_edit=df_cb_sgrna_edit %>%
+rowwise() %>%
+mutate(replicate = substr(CB,1,4)) %>%
+mutate(edited_locus_pos=ifelse(replicate == "rep1" & strand == "sense",
+       list(unlist(edited_locus_pos)[which(unlist(edited_locus_pos) %in% sense_positions_rep1)]),
+       ifelse(replicate == "rep1" & strand == "antisense",
+             list(unlist(edited_locus_pos)[which(unlist(edited_locus_pos) %in% antisense_positions_rep1)]),
+             ifelse(replicate == "rep2" & strand == "sense",
+             list(unlist(edited_locus_pos)[which(unlist(edited_locus_pos) %in% sense_positions_rep2)]),
+                    ifelse(replicate == "rep2" & strand == "antisense",
+             list(unlist(edited_locus_pos)[which(unlist(edited_locus_pos) %in% antisense_positions_rep2)]),
+             )))))

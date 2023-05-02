@@ -1,0 +1,282 @@
+#### Perturb(BE)-seq_preprocessing
+
+# Run in R or bash, as indicated below
+
+#### Load dependencies
+
+library("ShortRead")
+library("stringr")
+library("dplyr")
+library(viridis)
+library(stringr)
+library(tidyr)
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(hdf5r)
+library(Seurat)
+library(data.table)
+library(ggpointdensity)
+library(ggrepel)
+
+# Setup custom theme for plotting.
+custom_theme <- theme(
+  plot.title = element_text(size=16, hjust = 0.5), 
+  legend.key.size = unit(0.7, "cm"), 
+  legend.text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.text=element_text(size=16),
+        axis.title=element_text(size=20,face="bold"))
+
+#### Define path variables for R
+working_directory=""
+output_path=""
+replicate_number=2
+experiment_prefix=""
+fastq_path=""
+
+
+
+#### Run in terminal
+mkdir ~/working_directory/reference/
+
+
+
+#### Process raw .fastq.gz files (gene expression and enrichment PCR) with cellranger count to obtain .h5 objects
+
+
+
+
+#### Manually process CROP-seq reads detected on 10X reads without enrichment PCR
+
+## Create sgRNA reference and align sgRNAs detected with 10X
+
+# Import or manually introduce the sgRNA sequences in the library as a character vector
+sgRNA_reference=
+reference_for_fasta=data.frame(sgRNA_reference,sgRNA_reference)
+colnames(reference_for_fasta) = c("name","sequence")
+write.csv(reference_for_fasta,paste(working_directory,"reference.csv",sep=""))
+
+# Set directory with the genome
+#setwd("generate_ref_guide_fasta_wkdir/")
+# Define variables and paths
+upstream_sequence="ACCGTAACTTGAAAGTATTTCGATTTCTTGGCTTTATATATCTTGTGGAAAGGACGAAACACCG"
+downstream_sequence="GTTTCAGAGCTATGCTGGAAACAGCATAGCAAGTTGAAATAAGGCTAGTCCGTTATCAAC"   # The R2 scaffold sequence 
+# paste the file with the reference barcodes
+# Read barcode file
+barcodes <- read.table(paste(working_directory,"reference.csv", sep=""),header=TRUE, sep = ",")
+for (row in 1:nrow(barcodes)){
+  # fasta file creation
+  filename=paste(barcodes[row, "name"],".fasta",sep="")
+  text_file_content <- paste(upstream_sequence, barcodes[row, "sequence"], downstream_sequence, sep="")
+  write.fasta(sequences=text_file_content, names=barcodes[row, "sequence"], file.out=paste(working_directory,"reference/",filename,sep=""), open = "w")
+}
+
+#### Aligning CROP-seq transcript reads detected directly on scRNA-seq reads
+# Run in terminal
+output_path=""
+experiment_prefix=""
+fastq_path=""
+thread_number=
+replicate_number=
+
+# We run the STAR aligner in a conda environment
+conda activate star_env
+
+cd ${output_path}/reference
+## Need to cat *.fasta > combined_genome.fa
+cat *.fasta > combined_genome.fa
+
+STAR --runMode genomeGenerate \
+--runThreadN ${thread_number} \
+--genomeSAindexNbases 7 \
+--genomeFastaFiles ${fastq_path}/reference/combined_genome.fa \
+--genomeDir STAR_INDEX_barcodes 
+
+gatk CreateSequenceDictionary --REFERENCE ${fastq_path}/reference/combined_genome.fa --OUTPUT ${fastq_path}/reference/combined_genome.dict
+
+## Map 10X gene expression R2 reads to fasta 
+cd $output_path
+for replicate in 1 2; do
+echo $replicate
+nohup STAR --genomeDir ${output_path}/reference/STAR_INDEX_barcodes \
+--readFilesIn ${fastq_path}/${experiment_prefix}_rep${replicate}_read2.fastq.gz  \
+--outFileNamePrefix ${experiment_prefix}_${replicate}_STAR --runThreadN ${thread_number} \
+--readFilesCommand zcat > log_star_gex_barcodes_${replicate} 2>&1 &
+echo $! > save_pid_star_gex_barcodes_${replicate}.txt 
+done
+
+tail -f ${experiment_prefix}_${replicate}_STARLog.progress.out
+
+cd $output_path
+for replicate in 1 2; do
+echo $replicate
+samtools view -@ ${thread_number} ${experiment_prefix}_${replicate}_STARAligned.out.sam > ${experiment_prefix}_${replicate}_STARAligned
+cut -f1 ${experiment_prefix}_${replicate}_STARAligned > ${experiment_prefix}_${replicate}_STARAligned_read_names
+gzip -cd ${fastq_path}/${experiment_prefix}_rep${replicate}_read1.fastq.gz | ~/utilities/seqtk/seqtk subseq - ${experiment_prefix}_${replicate}_STARAligned_read_names > ${experiment_prefix}_${replicate}_R1_w_sgRNA.fastq
+
+cut -f1,3 ${experiment_prefix}_${replicate}_STARAligned > ${experiment_prefix}_${replicate}_R2_w_sgRNA.fastq
+done
+
+#### Import sgRNA alignment and process it (from the scRNA-seq reads)
+for (replicate in 1: replicate_number){
+print(replicate)
+assign(paste0("replicate_", replicate,"_R2_w_sgRNA", sep=""), read.table(paste(output_path, "/",experiment_prefix,"_",replicate,"_R2_w_sgRNA.fastq",sep="")))
+}
+
+# remove multimapped reads
+for (replicate in 1: replicate_number){
+print(replicate)
+assign(paste0("replicate_", replicate,"_R2_w_sgRNA_no_duplicates", sep=""), get(paste("replicate_", replicate,"_R2_w_sgRNA", sep=""))[!(duplicated(get(paste("replicate_", replicate,"_R2_w_sgRNA", sep=""))$V1) | duplicated(get(paste("replicate_", replicate,"_R2_w_sgRNA", sep=""))$V1, fromLast = TRUE)),])
+
+
+write.table(get(paste("replicate_", replicate,"_R2_w_sgRNA_no_duplicates", sep=""))$V1,paste(output_path,"/",experiment_prefix,"_",replicate,"_R2_w_sgRNA_no_duplicates", sep=""), row.names=FALSE,quote = FALSE, col.names=FALSE)
+
+}
+
+dim(replicate_1_R2_w_sgRNA)
+dim(replicate_1_R2_w_sgRNA_no_duplicates)
+
+datalist = list()
+
+for (i in 1:replicate_number) {
+    datalist[[i]] <- get(paste("replicate_", i,"_R2_w_sgRNA_no_duplicates", sep=""))
+}
+
+merged_R2_w_sgRNA_no_duplicates = do.call(rbind, datalist)
+
+dim(merged_R2_w_sgRNA_no_duplicates)
+
+# Run on terminal
+output_path=""
+experiment_prefix=""
+fastq_path=""
+for replicate in 1 2; do
+echo $replicate
+gzip -cd ${fastq_path}/${experiment_prefix}_rep${replicate}_read1.fastq.gz | ~/utilities/seqtk/seqtk subseq - ${output_path}/${experiment_prefix}_${replicate}_R2_w_sgRNA_no_duplicates > ${experiment_prefix}_${replicate}_R1_w_sgRNA_no_duplicates.fastq
+done
+
+#### Finish pre-processing
+for (replicate in 1:replicate_number) {
+print(replicate)
+assign(paste0("replicate_",replicate,"_R1",sep="") ,readFastq(paste(output_path,"/",experiment_prefix,"_",replicate,"_R1_w_sgRNA_no_duplicates.fastq",sep="")))
+assign(paste0("replicate_",replicate,"_R1_reads",sep=""),sread(get(paste("replicate_",replicate,"_R1",sep=""))))
+}
+
+
+datalist = list()
+
+for (i in 1:replicate_number) {
+    datalist[[i]] <- paste("rep",i,"_",as.data.frame(get(paste("replicate_",i,"_R1_reads",sep="")))$x,sep="")}
+
+merged_R1_reads = do.call(c, datalist)
+
+datalist = list()
+
+for (i in 1:replicate_number) {
+    datalist[[i]] <- get(paste("replicate_",i,"_R1",sep=""))}
+
+#adjust depending on the number of replicates
+merged_R1= append(datalist[[1]],datalist[[2]])
+
+length(merged_R1_reads)
+length(merged_R1)
+
+                        
+merged_R2_w_sgRNA_read_name<-merged_R2_w_sgRNA_no_duplicates[,1]
+
+dataframe1<-as.data.frame(ShortRead::id(merged_R1))
+
+merged_R1_read_name <-dataframe1 %>% separate(x, c("A", "B"), sep =" ")
+
+merged_R1_read_name<-merged_R1_read_name[,"A"]
+
+R1_dataframe <- data.frame(merged_R1_read_name,as.data.frame(merged_R1_reads)$merged_R1_reads)
+
+colnames(R1_dataframe) <- c("read_name","CB_UMI")
+
+rownames(merged_R2_w_sgRNA_no_duplicates)<- NULL
+R2_dataframe <- merged_R2_w_sgRNA_no_duplicates
+
+colnames(R2_dataframe) <- c("read_name","sgRNA")
+
+R1_R2_dataframe <- merge(R1_dataframe, R2_dataframe, by="read_name", all.x=FALSE)
+
+length(merged_R1_read_name)
+length(merged_R2_w_sgRNA_read_name)
+
+df <- 
+    tidyr::separate(
+    data= R1_R2_dataframe,
+    col=CB_UMI,
+    sep=21,
+    into = c("CB","UMI"),
+    remove = FALSE
+    )
+
+df_dedup <- df[!duplicated(df$CB_UMI),]
+
+fwrite(df_dedup,paste(output_path,"/df_dedup_detected_scrnaseq.csv",sep=""),row.names=TRUE)
+
+df_sgrna_count_casted_filtered=df_sgrna_count_casted_dataframe[,which(colnames(df_sgrna_count_casted_dataframe) %in% gsub("-1","",colnames(seurat_obj_merged)))]
+dim(df_sgrna_count_casted_filtered)
+
+df_sgrna_count_casted=df_sgrna_count_casted_filtered
+
+data<-data.frame(colSums(df_sgrna_count_casted),apply(df_sgrna_count_casted, 2, max), apply(df_sgrna_count_casted, 2, FUN = function(x) sort(x, decreasing = TRUE)[2]),apply(df_sgrna_count_casted, 2, FUN = function(x) sort(x, decreasing = TRUE)[3]),apply(df_sgrna_count_casted, 2, FUN = function(x) sort(x, decreasing = TRUE)[4]))
+
+colnames(data) <- c("total.barcode", "max.barcode", "second.max.barcode", "third.max.barcode","fourth.max.barcode")
+
+data_filtered<-data[gsub("-1","",colnames(seurat_obj_merged)),]
+
+data_filtered<-data_filtered[complete.cases(data_filtered), ]
+
+fwrite(data_filtered,paste(output_path,"/data_filtered.csv",sep=""),row.names=TRUE)
+
+#### Output diagnostic plots
+data_filtered=fread(paste(output_path,"/data_filtered.csv",sep=""))            
+
+output_plot_name=""
+intercept=
+slope=
+
+options(repr.plot.width=10, repr.plot.height=8)
+
+breaks=c(1,10,100,1000,10000)
+# second.max.barcode, third.max.barcode, etc. can also be plotted
+p<-ggplot(data_filtered) + geom_pointdensity(aes(total.barcode, max.barcode)) + scale_color_viridis(name="Number of cells",trans = "log",breaks=breaks, labels=function(x) format(breaks, scientific = TRUE)) + 
+geom_abline(linetype="dashed",intercept = intercept, slope = slope,size=1) + theme(axis.line = element_line(colour = 'black', size = 0.75),
+panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(),
+panel.border = element_blank(),
+panel.background = element_blank(),
+legend.key.size = unit(1, 'cm'),
+legend.title.align=0.1,
+                                                                       
+legend.text = element_text(size=16),
+legend.title= element_text(size=20),
+axis.title.y = element_text(size = rel(1.8)),
+axis.text.y = element_text(size=24),
+axis.title.x = element_text(size = rel(1.8)),
+axis.text.x = element_text(size=24),
+axis.ticks.length=unit(.25, "cm"),                                                                          
+legend.position = c(1.6, 0.53),
+plot.margin=unit(c(3,10,3,3),"cm")) +
+xlab("Total sgRNA counts in cell") + ylab("Counts top sgRNA in cell") + scale_x_continuous(expand = c(0, 0), limits = c(0,60),breaks=c(20, 40, 60, 80)) + scale_y_continuous(expand = c(0, 0), limits = c(0,60),breaks=c(20, 40, 60, 80))
+
+p
+ggsave(path=output_path,output_plot_name,width=10, height=8)
+x <- data_filtered$total.barcode
+length(x)
+y <- data_filtered$max.barcode
+
+yfit <- slope * x + intercept
+resi <- y - yfit
+
+sum(resi > 0)
+#above the fit:
+sum(resi < 0)
+paste(sum(resi > 0)/length(x)*100, "%", sep="")
+
+
+#### CROPseq counts, either from enrichment PCR or directly detected on scRNAseq reads, can be next loaded as an assay into a Seurat object containing a gene expression assay.

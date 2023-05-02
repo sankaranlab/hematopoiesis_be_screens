@@ -1,0 +1,334 @@
+#### Pooled_sc-genotyping-preprocessing_1
+# Load libraries
+#devtools::install_github(repo = "mojaveazure/loomR", ref = "develop")
+#BiocManager::install("reshape")
+library("ShortRead")
+library("stringr")
+library("dplyr")
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(patchwork)
+library(data.table)
+library(reshape)
+library(reshape2)
+library(loomR)
+library(ggplot2)
+library(scales)
+library(tidyverse)
+library(ggrepel)
+library(ggpointdensity)
+library(viridis)
+library(cowplot)
+
+# Define paths and variables
+output_path=""
+replicate_number=2
+experiment_prefix=""
+fastq_path=""
+
+#### Process .fastq.gz files using the Tapestri pipeline. Next, extract reads containing a sgRNA
+
+# Run in terminal
+output_path=""
+experiment_prefix=""
+fastq_path=""
+filename=
+
+thread_number=
+
+conda activate star_env
+
+cd $output_path
+for replicate in 1 2; do
+echo $replicate
+samtools view -@ $thread_number ${filename}.tube1.mapped.bam | grep "LVV1" | grep "GTTTCAGAG" | cut -f1 > ${experiment_prefix}_${replicate}_STARAligned_read_names
+gzip -cd ${filename}_R1_001.fastq.gz | /home/jupyter/seqtk/seqtk subseq - ${experiment_prefix}_${replicate}_STARAligned_read_names > ${experiment_prefix}_${replicate}_R1_w_sgRNA.fastq
+
+samtools view -@ $thread_number ${filename}.tube1.mapped.bam | grep "LVV1" | grep "GTTTCAGAG" | cut -f1,10 > ${experiment_prefix}_${replicate}_R2_w_sgRNA.fastq
+done
+
+#### Import sgRNA alignment and process it
+output_path=""
+experiment_prefix=""
+fastq_path=""
+replicate_number=2
+
+
+for (replicate in 1: replicate_number){
+print(replicate)
+assign(paste0("replicate_", replicate,"_R2_w_sgRNA", sep=""), read.table(paste(output_path, "/",experiment_prefix,"_",replicate,"_R2_w_sgRNA.fastq",sep="")))
+}
+
+# remove multimapped reads
+for (replicate in 1: replicate_number){
+print(replicate)
+assign(paste0("replicate_", replicate,"_R2_w_sgRNA_no_duplicates", sep=""), get(paste("replicate_", replicate,"_R2_w_sgRNA", sep=""))[!(duplicated(get(paste("replicate_", replicate,"_R2_w_sgRNA", sep=""))$V1) | duplicated(get(paste("replicate_", replicate,"_R2_w_sgRNA", sep=""))$V1, fromLast = TRUE)),])
+
+
+write.table(get(paste("replicate_", replicate,"_R2_w_sgRNA_no_duplicates", sep=""))$V1,paste(output_path,"/",experiment_prefix,"_",replicate,"_R2_w_sgRNA_no_duplicates", sep=""), row.names=FALSE,quote = FALSE, col.names=FALSE)
+
+}
+
+dim(replicate_1_R2_w_sgRNA)
+dim(replicate_1_R2_w_sgRNA_no_duplicates)
+
+datalist = list()
+
+for (i in 1:replicate_number) {
+    datalist[[i]] <- get(paste("replicate_", i,"_R2_w_sgRNA_no_duplicates", sep=""))
+}
+
+merged_R2_w_sgRNA_no_duplicates = do.call(rbind, datalist)
+
+dim(merged_R2_w_sgRNA_no_duplicates)
+
+# In Terminal
+output_path=""
+experiment_prefix=""
+fastq_path=""
+
+for replicate in 1 2; do
+echo $replicate
+gzip -cd ${fastq_path}/${experiment_prefix}_encap_${replicate}_read1.fastq.gz | ~/utilities/seqtk/seqtk subseq - ${output_path}/${experiment_prefix}_${replicate}_R2_w_sgRNA_no_duplicates > ${experiment_prefix}_${replicate}_R1_w_sgRNA_no_duplicates.fastq
+done
+
+## again in R
+output_path=""
+replicate_number=2
+experiment_prefix=""
+fastq_path=""
+
+for (replicate in 1:replicate_number) {
+print(replicate)
+assign(paste0("replicate_",replicate,"_R1",sep="") ,readFastq(paste(output_path,"/",experiment_prefix,"_",replicate,"_R1_w_sgRNA_no_duplicates.fastq",sep="")))
+assign(paste0("replicate_",replicate,"_R1_reads",sep=""),sread(get(paste("replicate_",replicate,"_R1",sep=""))))
+}
+
+
+datalist = list()
+
+for (i in 1:replicate_number) {
+    datalist[[i]] <- paste("rep",i,"_",as.data.frame(get(paste("replicate_",i,"_R1_reads",sep="")))$x,sep="")}
+
+merged_R1_reads = do.call(c, datalist)
+
+datalist = list()
+
+for (i in 1:replicate_number) {
+    datalist[[i]] <- get(paste("replicate_",i,"_R1",sep=""))}
+
+merged_R1= do.call('append', datalist)
+
+                        
+merged_R2_w_sgRNA_read_name<-merged_R2_w_sgRNA_no_duplicates[,1]
+
+dataframe1<-as.data.frame(ShortRead::id(merged_R1))
+
+merged_R1_read_name <-dataframe1 %>% separate(x, c("A", "B"), sep =" ")
+
+merged_R1_read_name<-merged_R1_read_name[,"A"]
+
+R1_dataframe <- data.frame(merged_R1_read_name,as.data.frame(merged_R1_reads)$merged_R1_reads)
+
+colnames(R1_dataframe) <- c("read_name","CB_UMI")
+
+rownames(merged_R2_w_sgRNA_no_duplicates)<- NULL
+R2_dataframe <- merged_R2_w_sgRNA_no_duplicates
+
+colnames(R2_dataframe) <- c("read_name","sgRNA")
+
+R1_R2_dataframe <- merge(R1_dataframe, R2_dataframe, by="read_name", all.x=FALSE)
+
+length(merged_R1_read_name)
+length(merged_R2_w_sgRNA_read_name)
+
+df <- 
+    tidyr::separate(
+    data= R1_R2_dataframe,
+    col=CB_UMI,
+    sep="AGTACGTACGAGTC",
+    into = c("CB1","adaptor_CB2_and_read"),
+    remove = FALSE
+    )
+
+df_9bp=df %>%
+dplyr::filter(nchar(CB1) == 9 + 5)
+
+df_9bp_split <- 
+    tidyr::separate(
+    data= df_9bp,
+    col=adaptor_CB2_and_read,
+    sep="GTACTCGCAGTAGTCT",
+    into = c("CB2","discard"),
+    remove = FALSE
+    )
+
+
+df_10bp=df %>%
+dplyr::filter(nchar(CB1) == 9 + 6)
+
+df_10bp$CB1 = substr(df_10bp$CB1,1,14)
+
+df_10bp_split <- 
+    tidyr::separate(
+    data= df_10bp,
+    col=adaptor_CB2_and_read,
+    sep="GTACTCGCAGTAGTCT",
+    into = c("CB2","discard"),
+    remove = FALSE
+    )
+
+df_11bp=df %>%
+dplyr::filter(nchar(CB1) == 9 + 7)
+
+df_11bp$CB1 = substr(df_11bp$CB1,1,14)
+
+df_11bp_split <- 
+    tidyr::separate(
+    data= df_11bp,
+    col=adaptor_CB2_and_read,
+    sep="GTACTCGCAGTAGTCT",
+    into = c("CB2","discard"),
+    remove = FALSE
+    )
+
+df_12bp=df %>%
+dplyr::filter(nchar(CB1) == 9 + 8)
+
+df_12bp$CB1 = substr(df_12bp$CB1,1,14)
+
+df_12bp_split <- 
+    tidyr::separate(
+    data= df_12bp,
+    col=adaptor_CB2_and_read,
+    sep="GTACTCGCAGTAGTCT",
+    into = c("CB2","discard"),
+    remove = FALSE
+    )
+
+df=rbind(df_9bp_split,df_10bp_split,df_11bp_split,df_12bp_split)
+df=df %>%
+mutate(CB = paste(CB1,CB2,sep=""))
+df$sgRNA=str_match(df$sgRNA,"CACCG(.*?)GTTTCAGAG")[,2]
+df=df %>%
+dplyr::filter(nchar(df$sgRNA) == 20)
+df_dedup <- df
+
+fwrite(df_dedup,paste(output_path,"/genotyping_detected_all_replicates.csv",sep=""),row.names=TRUE)
+
+# Connect to the loom file output by the Tapestri pipeline in read/write mode. Input any replicates
+lfile1 <- connect(filename = "file_replicate_1.loom", mode = "r+")
+lfile2 <- connect(filename = "file_replicate_2.loom", mode = "r+")
+
+### format barcode
+cell_bc_read1 <- lfile1[['col_attrs/barcode']][]
+cell_bc_split1 <- str_split(cell_bc_read1, '-')
+
+cell_bc_split_letters1 <- lapply(cell_bc_split1, '[[', 1)
+cell_bc_split_rep1 <- lapply(cell_bc_split1, '[[', 2)
+
+cell_barcodes1 <- as.data.frame(paste('rep','1', '_', cell_bc_split_letters1, sep=''))
+colnames(cell_barcodes1) <- c('barcode')
+
+### rep_2
+cell_bc_read2 <- lfile2[['col_attrs/barcode']][]
+cell_bc_split2 <- str_split(cell_bc_read2, '-')
+
+cell_bc_split_letters2 <- lapply(cell_bc_split2, '[[', 1)
+cell_bc_split_rep2 <- lapply(cell_bc_split2, '[[', 2)
+
+cell_barcodes2 <- as.data.frame(paste('rep', '2', '_', cell_bc_split_letters2, sep=''))
+colnames(cell_barcodes2) <- c('barcode')
+
+### Run the following for each replicate:
+df_dedup = fread(paste(output_path,"/genotyping_detected_all_replicates.csv",sep=""))
+
+colnames(df_dedup) = as.character(df_dedup[1,])
+
+df_dedup=df_dedup[-1,-1]
+df_dedup=df_dedup[which(df_dedup$CB %in% c(cell_barcodes1$barcode)),]
+
+df_sgrna_count <- df_dedup %>%
+group_by(CB,sgRNA) %>%
+summarise(n=n())
+
+df_sgrna_count_casted=reshape2::dcast(df_sgrna_count,formula = CB~sgRNA)
+
+df_sgrna_count_casted[is.na(df_sgrna_count_casted)] <- 0
+
+
+
+rownames(df_sgrna_count_casted) <- df_sgrna_count_casted[,1]
+df_sgrna_count_casted[,1] <- NULL
+
+df_sgrna_count_casted<-t(df_sgrna_count_casted)
+
+dim(df_sgrna_count_casted)
+
+df_sgrna_count_casted_dataframe=as.data.frame(df_sgrna_count_casted)
+df_sgrna_count_casted_dataframe_tapestri_reads=df_sgrna_count_casted_dataframe
+
+top_perturbation_per_cell_tapestri_reads=colnames(t(df_sgrna_count_casted_dataframe_tapestri_reads)
+)[max.col(t(df_sgrna_count_casted_dataframe_tapestri_reads)
+,ties.method="first")]
+
+df_sgrna_count_casted_filtered=df_sgrna_count_casted_dataframe
+
+dim(df_sgrna_count_casted_filtered)
+
+df_sgrna_count_casted=df_sgrna_count_casted_filtered
+
+data<-data.frame(colSums(df_sgrna_count_casted),apply(df_sgrna_count_casted, 2, max), apply(df_sgrna_count_casted, 2, FUN = function(x) sort(x, decreasing = TRUE)[2]),apply(df_sgrna_count_casted, 2, FUN = function(x) sort(x, decreasing = TRUE)[3]),apply(df_sgrna_count_casted, 2, FUN = function(x) sort(x, decreasing = TRUE)[4]))
+
+colnames(data) <- c("total.barcode", "max.barcode", "second.max.barcode", "third.max.barcode","fourth.max.barcode")
+
+#data = fread(paste(output_path,"/data.csv",sep=""))
+data_filtered=data
+length(which(c(cell_barcodes1$barcode,
+               cell_barcodes2$barcode)
+               
+               
+               %in% row.names(data_filtered)))
+
+#### Identify the optimal separation between the population of cells with a single sgRNA per cell and multiple sgRNAs
+
+intercept=
+slope=
+
+breaks=c(1,10,100,1000,10000)
+p<-ggplot(data_filtered) + geom_pointdensity(aes(total.barcode, max.barcode)) + scale_color_viridis(name="Number of cells",trans = "log",breaks=breaks, labels=function(x) format(breaks, scientific = TRUE)) + 
+geom_abline(linetype="dashed",intercept = intercept, slope = slope,size=1) + theme(axis.line = element_line(colour = 'black', size = 0.75),
+panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(),
+panel.border = element_blank(),
+panel.background = element_blank(),
+legend.key.size = unit(1, 'cm'),
+legend.title.align=0.1,
+                                                                       
+legend.text = element_text(size=16),
+legend.title= element_text(size=20),
+axis.title.y = element_text(size = rel(1.8)),
+axis.text.y = element_text(size=24),
+axis.title.x = element_text(size = rel(1.8)),
+axis.text.x = element_text(size=24),
+axis.ticks.length=unit(.25, "cm"),                                                                          
+legend.position = c(1.1, 0.53),
+plot.margin=unit(c(3,6,3,3),"cm")) +
+xlab("Total sgRNA reads in cell") + ylab("Reads of top sgRNA in cell") + scale_x_continuous(expand = c(0, 0),limits = c(0,150)) + scale_y_continuous(expand = c(0, 0),limits = c(0,150))
+x <- data_filtered$total.barcode
+length(x)
+y <- data_filtered$max.barcode
+
+yfit <- slope * x + intercept
+resi <- y - yfit
+
+sum(resi > 0)
+#above the fit:
+sum(resi < 0)
+paste(sum(resi > 0)/length(x)*100, "%", sep="")
+
+single_sgrna_rep_1=row.names(data_filtered[which(resi > 0) ,])
+
+
+write.csv(c(single_sgrna_rep_1,single_sgrna_rep_2),paste(output_path,"single_sgrna_barcodes.csv",sep=""))

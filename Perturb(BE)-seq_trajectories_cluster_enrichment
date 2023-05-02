@@ -1,0 +1,114 @@
+#### Perturb(BE)-seq_trajectories_cluster_enrichment
+# import packages
+import dynamo as dyn 
+import pandas as pd
+import numpy as np
+import scanpy as sc
+
+#### Load data
+
+# Load Dynamo's sample hematopoiesis dataset, which contains genes that we will use in downstream analysis
+hsc = dyn.sample_data.hematopoiesis()
+
+# Load your single cell anndata object (.h5ad) with the dominant guide for each cell ("max_guide"). Cell clusters ("celltype") can be identifed using standard clustering procedures using Seurat or Scanpy. 
+adata_all = dyn.read('')
+
+# Load any additional genes that you wish to use in downstream analyses as .txt files
+gene_list_1 = pd.read_csv('gene_list_1.txt', header=None)
+gene_list_2 = pd.read_csv('gene_list_2.txt', header=None)
+
+# Prepare the list of genes that will be used to run downstream velocity analyses
+
+adata_all.obs.celltype.value_counts()
+indices = list(adata_all.var_names)
+adata_all.var_names = indices
+adata_all.var_names_make_unique()
+user_provided_genes = gene_list_1[0].to_list() + gene_list_2[0].to_list() 
+append_genes = list(np.unique(list(hsc.var_names) + user_provided_genes))
+append_genes = list(adata_all.var_names.intersection(append_genes))
+append_genes = list(np.array(append_genes)[np.where(adata_all[:, append_genes].X.sum(0) > 10)[1]])
+
+# OPTIONAL. If you wish to subset cells used in analysis to only certain sgRNAs,
+# provide the sgRNA sequences and subset the anndata object. 
+
+guide_group_1 = ['guide_sequence_1','guide_sequence_2','','']
+guide_group_2 = ["guide_sequence_3","guide_sequence_4",'','']
+
+# max_guide_update is the slot that contains the dominant sgRNA in each cell
+adata_all = adata_all[adata_all.obs.max_guide_updated.isin(guide_group_1 + guide_group_2)]
+
+adata_all.obs['subset_group'] = 'none'
+
+adata_all.obs.loc[adata_all.obs['max_guide'].isin(guide_group_1), 'subset_group'] = 'guide_group_1'
+adata_all.obs.loc[adata_all.obs['max_guide'].isin(guide_group_2), 'subset_group'] = 'guide_group_2'
+
+#Get the number of cells in each group
+adata_all.obs.subset_group.value_counts()
+
+# Run Dynamo
+
+dyn.pp.recipe_monocle(adata_all, genes_to_append=append_genes)
+dyn.tl.dynamics(adata_all)
+dyn.tl.reduceDimension(adata_all)
+dyn.tl.cell_velocities(adata_all)
+dyn.pl.streamline_plot(adata_all)
+dyn.pl.streamline_plot(adata_all, color='celltype')
+
+# If the streamline plot does not show the expected velocity, it can be corrected using the procedure implemented in Dynamo
+
+dyn.tl.confident_cell_velocities(adata_all, 
+                                 group='celltype',
+                                 lineage_dict={"HSPC": "EryP",
+                                               "EryP": "Ery",
+                                              }
+                                            )
+dyn.pl.streamline_plot(adata_all, color='celltype')
+
+# To visualize density of cells with certain perturbations
+tmp = adata_all[adata_all.obs.max_guide_updated.isin(guide_group_1 + ['sequence_of_any_guide'])]
+
+sc.tl.embedding_density(tmp, basis='umap', groupby='subset_group')
+
+sc.pl.embedding_density(
+    tmp,
+    basis='umap',
+    key='umap_density_subset_group',
+    group=['guide_group_1', 'guide_group_2'],
+    save='name',
+)
+
+## Cluster sgRNA enrichment analysis
+
+# Load your single cell anndata object (.h5ad) with the dominant guide for each cell ("max_guide"). Cell clusters ("celltype") can be identifed using standard clustering procedures using Seurat or Scanpy. 
+adata_all = dyn.read('')
+
+guide_count_tab = adata_all.obs.loc[:, ['max_guide']].value_counts()
+
+valid_genes = list((guide_count_tab.index[guide_count_tab > 50]).get_level_values('max_guide'))
+
+guide_count_tab.index.get_level_values('max_guide')
+
+guide_cell_num = adata_all.obs.loc[:, ['max_guide', 'celltype']].value_counts().loc[valid_genes, :]
+
+guide_cell_frac = guide_cell_num / guide_cell_num.groupby('max_guide_updated').transform('sum')
+
+cell_num = adata_all.obs.loc[:, ['max_guide', 'celltype']]['celltype'].value_counts() 
+
+cell_frac = cell_num / cell_num.sum()
+
+cell_frac[guide_cell_frac.reset_index()['celltype']]
+
+guide_cell_frac_df = guide_cell_frac.reset_index()
+guide_cell_frac_df.iloc[:, 2] = guide_cell_frac_df.iloc[:, 2] - cell_frac[guide_cell_frac_df['celltype']].values
+
+guide_cell_frac_df.columns = ['max_guide', 'celltype', 'values']
+
+guide_cell_frac_df['values'].abs().max()
+
+guide_to_background_mat = pd.crosstab(
+                            index=guide_cell_frac_df['max_guide_updated'], 
+                            columns = guide_cell_frac_df['celltype'], 
+                            aggfunc='sum',
+                            values = guide_cell_frac_df['values'])
+
+# This provides a dataframe with enrichment scores of each sgRNA for each cluster, which can be z-scored.
