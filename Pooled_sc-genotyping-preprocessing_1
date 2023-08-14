@@ -43,7 +43,7 @@ cd $output_path
 for replicate in 1 2; do
 echo $replicate
 samtools view -@ $thread_number ${filename}.tube1.mapped.bam | grep "LVV1" | grep "GTTTCAGAG" | cut -f1 > ${experiment_prefix}_${replicate}_STARAligned_read_names
-gzip -cd ${filename}_R1_001.fastq.gz | /home/jupyter/seqtk/seqtk subseq - ${experiment_prefix}_${replicate}_STARAligned_read_names > ${experiment_prefix}_${replicate}_R1_w_sgRNA.fastq
+gzip -cd ${filename}_encap_${replicate}_read1.fastq.gz | /home/jupyter/seqtk/seqtk subseq - ${experiment_prefix}_${replicate}_STARAligned_read_names > ${experiment_prefix}_${replicate}_R1_w_sgRNA.fastq
 
 samtools view -@ $thread_number ${filename}.tube1.mapped.bam | grep "LVV1" | grep "GTTTCAGAG" | cut -f1,10 > ${experiment_prefix}_${replicate}_R2_w_sgRNA.fastq
 done
